@@ -34,6 +34,7 @@ bool buttonsReady = false;
 bool oledReady = false;
 uint8_t lastButtonByte = 0xFF;
 unsigned long lastButtonEventMs = 0;
+uint8_t pendingFalls = 0;
 bool lastStable[BUTTON_COUNT];
 bool lastRaw[BUTTON_COUNT];
 unsigned long lastChange[BUTTON_COUNT];
@@ -302,26 +303,33 @@ ButtonEvent readButtonEvent()
     }
 
     unsigned long currentMillis = millis();
-    uint8_t previousButtonByte = lastButtonByte;
-    uint8_t currentButtonByte = buttons.read8();
-    if (currentButtonByte != lastButtonByte)
+    uint8_t current = buttons.read8();
+    uint8_t prev = lastButtonByte;
+
+    if (current != prev)
     {
+        lastButtonByte = current;
+
+        // Falling edges: bits that were HIGH (released) and are now LOW (pressed)
+        uint8_t fell = (~current) & prev;
+        pendingFalls |= fell;
+
         Serial.printf("PCF8574 raw=0b");
         for (int8_t bit = 7; bit >= 0; bit--)
         {
-            Serial.print((currentButtonByte & (1 << bit)) ? '1' : '0');
+            Serial.print((current >> bit) & 1 ? '1' : '0');
         }
-        Serial.printf(" hex=0x%02X, changed P", currentButtonByte);
+        Serial.printf(" hex=0x%02X, changed P", current);
         for (uint8_t bit = 0; bit < 8; bit++)
         {
-            if ((currentButtonByte ^ lastButtonByte) & (1 << bit))
+            if ((current ^ prev) & (1 << bit))
             {
                 Serial.print(bit);
                 Serial.print(' ');
             }
         }
         Serial.println();
-        lastButtonByte = currentButtonByte;
+        Serial.printf("DEBUG: fell=0x%02X pending=0x%02X\r\n", fell, pendingFalls);
     }
 
     if (currentMillis - lastButtonEventMs < BUTTON_LOCKOUT_MS)
@@ -329,14 +337,16 @@ ButtonEvent readButtonEvent()
         return BUTTON_NONE;
     }
 
+    if (pendingFalls == 0)
+    {
+        return BUTTON_NONE;
+    }
+
     for (uint8_t i = 0; i < BUTTON_COUNT; i++)
     {
-        uint8_t mask = 1 << buttonPins[i];
-        bool wasReleased = (previousButtonByte & mask) != 0;
-        bool isPressed = (currentButtonByte & mask) == 0;
-
-        if (wasReleased && isPressed)
+        if (pendingFalls & (1 << buttonPins[i]))
         {
+            pendingFalls &= ~(1 << buttonPins[i]);
             lastButtonEventMs = currentMillis;
             Serial.printf("Button event P%u\r\n", buttonPins[i]);
             return buttonEvents[i];
